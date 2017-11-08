@@ -1,0 +1,143 @@
+%faccio sia componente clustering che componente ConnectionManager
+
+% parametro di clustering per:
+% 1) spectral clustering (sensibilit� di clustering)
+% 2) affinity propagation (fattore di smorzamento)
+
+if ~exist('clustpar')
+    clustpar=0.5;
+end
+
+disp('Creo matrice similarita tra i sottografi')
+% Seleziono kernel da utilizzare
+if exist('kernelClustering')
+    disp(['Uso kernel ',kernelClustering]);
+    switch kernelSampling
+        case 'W'
+            %DA USARE PER WEISFEILER LEHMAN
+            kernelDistance = @WeisfeilerLehmanKernelDistance;
+            kernelPar = 5;
+            sim = createWeisfeilerLehmanKernelMatrix(Flin, 5, 1);
+        case 'G'
+            disp('So usando GraphHopper');
+            kernelDistance = @GraphHopperKernelDistance;
+            node_kernel_type = 'linear';
+            mu = 1;
+            vecvalues = 0;
+            kernelPar = {node_kernel_type, mu, vecvalues};
+            
+            Flin_conv = ConvertiPerGraphHopper(Flin);
+            pool = parpool('local', 4);
+
+            sim = GraphHopper_dataset(Flin_conv,'linear',mu,0);
+    end
+else 
+        disp('Caso Standard');
+        kernelDistance = @GraphHopperKernelDistance;
+        node_kernel_type = 'linear';
+        mu = 1;
+        vecvalues = 0;
+        kernelPar = {node_kernel_type, mu, vecvalues};
+
+        Flin_conv = ConvertiPerGraphHopper(Flin);
+        pool = parpool('local', 2);
+
+        sim = GraphHopper_dataset(Flin_conv,'linear',mu,0);
+end
+
+
+disp('Creo i cluster')
+% utilizzare uno dei due algoritmi di clustering
+
+
+if exist('clusteringMethod')
+    if clusteringMethod == 'N'
+        % spectral clustering
+        [insCluster, riferimenti, conCluster]=partition(sim,clustpar);
+    else
+        % affinity propagation
+        [E, K, idx, riferimenti] = affinityPropagation(sim, clustpar);
+    end
+else
+    disp('Uso il metodo standard di clusteri
+
+ncluster=size(riferimenti,1);
+
+%ricordo che sottografi{k,i} -> graforig(k,i)=i2 -> riferimenti(c,i2)==1 
+%a questo punto prima mi conviene salvare il cluster di sottografi{k,i}
+clustref = clusterReferences(ngrafi, ncluster, numF, graforig, riferimenti);
+
+disp('Creo le matrici di connessione di tutti i grafi')
+%creo tutte le matrici di connessione dei sottografi che servono per
+%la seconda fase di Gibbs sampling e ottenere il numero di connessioni
+[subgraphClusteringMs, subgraphIds] = subgraphClusteringMatrices(C_e, numF, graforig, clustref);
+
+%prima di poter posizionare F_e e C_e mi serve sapere il numero massimo
+%in un grafo di sottografi per ogni cluster
+maxsgxcluster = maxSubgraphsForCluster(ngrafi, ncluster, clustref, numF);
+
+%mi serve poscluster(c) per tracciare insieme a maxsgcluster(c)
+%le posizioni per ogni cluster
+poscluster = slotsForCluster(ncluster, maxsgxcluster);
+
+disp('Creo la matrice di configurazione dei cluster')
+%creo anche la matrice U che mi servir? nella generazione pi? avanti
+U = createClusterConfigurationMatrix(ngrafi, ncluster, clustref, numF, poscluster, sum(maxsgxcluster));
+
+disp('Calcolo le statistiche')
+[alfa, beta, gamma, gammaCut, zeta, iota, distances, distancesCut, cutDegreeSum] = tabulaTagli(grafi, F_e, C_e, numF, subgraphToNodeAssociation, kernelDistance, kernelPar);
+
+% PER STAMPA ***************************************************
+%riorganizzo i sottografi e i cluster per la stampa, faccio il padding solo ai fini della stampa
+%ottenendo F_p e C_p
+[F_p, C_p] = paddingSubgraphsAndConnections(F_e, C_e, numF, ngrafi, sizemax);
+[Fdivisi, Fcluster, groupCluster] = reorganizeSubgraphsAndClusters(ngrafi, sizemax, ncluster, clustref, numF, F_p);
+
+%stampo sottografi e cluster
+pathA=(strcat(pwd,'/','Data','/GrafiOriginaliSegmentati/'));
+[~, ~, ~] = mkdir(pathA);
+pathB=(strcat(pwd,'/','Data','/ClustersSottografi/'));
+[~, ~, ~] = mkdir(pathB);
+for k=1:ngrafi,
+    dlmwrite(strcat(pathA,'grafoini_',num2str(k),'.txt'),Fdivisi{k});
+end
+for c=1:ncluster,
+    dlmwrite(strcat(pathB,'cluster_',num2str(c),'.txt'),groupCluster{c});
+end
+
+%stampo la matrice di similarit� e le etichette dei cluster corrispondenti
+%ai sottografi
+labels = zeros(1, size(sim,1));
+for c=1:ncluster
+    for i=1:size(riferimenti, 2)
+        if riferimenti(c, i) == 1
+            labels(i) = c;
+        end
+    end
+end
+
+% Matrice di similarita' dei sottografi ed etichette dei cluster di appartenenza (da usare come input a TSNE)
+pathS=(strcat(pwd,'/','Data','/MatriceSimilaritaClusteringTSNE/'));
+[~, ~, ~] = mkdir(pathS);
+dlmwrite(strcat(pathS,'similarity_matrix.txt'),sim);
+dlmwrite(strcat(pathS,'cluster_labels.txt'),labels);
+% PER STAMPA ***************************************************
+
+disp('Salvo i dati della fase di clustering e gestione connessioni')
+%salvo i dati per le fasi successive
+[~, ~, ~] = mkdir('Data/matFiles/');
+save('Data/matFiles/ClusteringAndConnectionManagerData','grafi','alfa','beta','gamma','gammaCut','zeta','iota','distances','distancesCut','cutDegreeSum','graforig','Fcluster','subpar','clustpar','sizemax','subgraphClusteringMs','subgraphIds','riferimenti','numF','F_e','U','clustref','maxsgxcluster','ncluster','poscluster');
+
+if exist('kernelClustering')
+    if kernelClustering == 'G'
+        %da usare quando si usa GraphHopper come kernel
+        if exist('pool')
+            delete(pool);
+        else
+            disp('Sembra che Pool non esista');
+        end
+    end
+else
+    %da usare quando si usa GraphHopper come kernel
+    delete(pool);
+end
